@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 import re
-
+import os
 import requests
 from flask import Flask, Response, redirect, request
 from requests.exceptions import (
@@ -12,56 +12,95 @@ from urllib3.exceptions import (
     DecodeError, ReadTimeoutError, ProtocolError)
 from urllib.parse import quote
 
-# config
-# 分支文件使用jsDelivr镜像的开关，0为关闭，默认关闭
-jsdelivr = 0
-size_limit = 1024 * 1024 * 1024 * 999  # 允许的文件大小，默认999GB，相当于无限制了 https://github.com/hunshcn/gh-proxy/issues/8
 
-"""
-  先生效白名单再匹配黑名单，pass_list匹配到的会直接302到jsdelivr而忽略设置
-  生效顺序 白->黑->pass，可以前往https://github.com/hunshcn/gh-proxy/issues/41 查看示例
-  每个规则一行，可以封禁某个用户的所有仓库，也可以封禁某个用户的特定仓库，下方用黑名单示例，白名单同理
-  user1 # 封禁user1的所有仓库
-  user1/repo1 # 封禁user1的repo1
-  */repo1 # 封禁所有叫做repo1的仓库
-"""
-white_list = '''
-'''
-black_list = '''
-'''
-pass_list = '''
-'''
+# ----------------------
+# 配置文件规则读取
+# ----------------------
+def read_and_process_rules(file_path):
+    """从指定文件路径读取规则并处理为元组格式"""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as file:
+            lines = [line.strip()
+                     for line in file if line.strip()]  # 去除空行及两端空白
+        return [tuple(item.replace(' ', '') for item in line.split('/')) for line in lines]
+    except:
+        return []
 
+
+# ----------------------
+# 配置部分
+# ----------------------
+# 允许代理的文件大小限制 https://github.com/hunshcn/gh-proxy/issues/8
+size_limit = int(os.environ.get('SIZE_LIMIT', 1024 * 1024 * 1024 * 999))
+
+# 大文件服务器地址
+BIG_SERVER = os.environ.get('BIG_SERVER', 'https://ghfast.top/')
+
+# 读取并处理访问控制规则
+white_list = read_and_process_rules('whitelist.txt')
+black_list = read_and_process_rules('blacklist.txt')
+pass_list = read_and_process_rules('passlist.txt')
+
+# 要删除的头部列表
+HEADERS_TO_REMOVE = ['Transfer-Encoding', 'Strict-Transport-Security', 'Access-Control-Allow-Origin',
+                     'Clear-Site-Data',  'Content-Security-Policy', 'Content-Security-Policy-Report-Only',
+                     'Cross-Origin-Resource-Policy', 'X-GitHub-Request-Id', 'X-Fastly-Request-ID', 'Via',
+                     'X-Served-By', 'X-Cache', 'X-Cache-Hits', 'X-Timer', 'Expires', 'Source-Age']
+
+# 监听参数（实际以 gunicorn、uwsgi 的为主）
 HOST = '127.0.0.1'  # 监听地址，建议监听本地然后由web服务器反代
-PORT = 80  # 监听端口
-ASSET_URL = 'https://hunshcn.github.io/gh-proxy'  # 主页
+PORT = 8000         # 监听端口
 
-white_list = [tuple([x.replace(' ', '') for x in i.split('/')]) for i in white_list.split('\n') if i]
-black_list = [tuple([x.replace(' ', '') for x in i.split('/')]) for i in black_list.split('\n') if i]
-pass_list = [tuple([x.replace(' ', '') for x in i.split('/')]) for i in pass_list.split('\n') if i]
+# 初始化Flask应用
 app = Flask(__name__)
-CHUNK_SIZE = 1024 * 10
-index_html = requests.get(ASSET_URL, timeout=10).text
-icon_r = requests.get(ASSET_URL + '/favicon.ico', timeout=10).content
-exp1 = re.compile(r'^(?:https?://)?github\.com/(?P<author>.+?)/(?P<repo>.+?)/(?:releases|archive)/.*$')
-exp2 = re.compile(r'^(?:https?://)?github\.com/(?P<author>.+?)/(?P<repo>.+?)/(?:blob|raw)/.*$')
-exp3 = re.compile(r'^(?:https?://)?github\.com/(?P<author>.+?)/(?P<repo>.+?)/(?:info|git-).*$')
-exp4 = re.compile(r'^(?:https?://)?raw\.(?:githubusercontent|github)\.com/(?P<author>.+?)/(?P<repo>.+?)/.+?/.+$')
-exp5 = re.compile(r'^(?:https?://)?gist\.(?:githubusercontent|github)\.com/(?P<author>.+?)/.+?/.+$')
+CHUNK_SIZE = 1024 * 10  # 流式传输分块大小
 
+
+# ----------------------
+# GitHub URL正则匹配模式
+# ----------------------
+# 匹配 releases/archive
+exp1 = re.compile(
+    r'^(?:https?://)?github\.com/(?P<author>.+?)/(?P<repo>.+?)/(?:releases|archive)/.*$')
+# 匹配 blob/raw
+exp2 = re.compile(
+    r'^(?:https?://)?github\.com/(?P<author>.+?)/(?P<repo>.+?)/(?:blob|raw)/.*$')
+# 匹配 git信息
+exp3 = re.compile(
+    r'^(?:https?://)?github\.com/(?P<author>.+?)/(?P<repo>.+?)/(?:info|git-).*$')
+# 匹配 raw文件
+exp4 = re.compile(
+    r'^(?:https?://)?raw\.(?:githubusercontent|github)\.com/(?P<author>.+?)/(?P<repo>.+?)/.+?/.+$')
+# 匹配 gist
+exp5 = re.compile(
+    r'^(?:https?://)?gist\.(?:githubusercontent|github)\.com/(?P<author>.+?)/.+?/.+$')
+
+# 清除requests默认headers
 requests.sessions.default_headers = lambda: CaseInsensitiveDict()
+
+
+# ----------------------
+# 路由处理
+# ----------------------
 
 
 @app.route('/')
 def index():
-    if 'q' in request.args:
-        return redirect('/' + request.args.get('q'))
-    return index_html
+    """首页处理，支持q参数重定向"""
+    if 'q' in request.args:  # 如果带q参数则重定向
+        return redirect('/' + request.args.get('q'), 301)
+    # 默认返回404页面
+    return Response('The requested resource was not found on this server.', status=404)
 
 
-@app.route('/favicon.ico')
+@app.route('/robots.txt')
 def icon():
-    return Response(icon_r, content_type='image/vnd.microsoft.icon')
+    return Response("User-agent: *\r\nDisallow: /", status=200)
+
+
+# ----------------------
+# 自定义流式内容处理
+# ----------------------
 
 
 def iter_content(self, chunk_size=1, decode_unicode=False):
@@ -71,8 +110,7 @@ def iter_content(self, chunk_size=1, decode_unicode=False):
         # Special case for urllib3.
         if hasattr(self.raw, 'stream'):
             try:
-                for chunk in self.raw.stream(chunk_size, decode_content=False):
-                    yield chunk
+                yield from self.raw.stream(chunk_size, decode_content=False)
             except ProtocolError as e:
                 raise ChunkedEncodingError(e)
             except DecodeError as e:
@@ -92,7 +130,8 @@ def iter_content(self, chunk_size=1, decode_unicode=False):
     if self._content_consumed and isinstance(self._content, bool):
         raise StreamConsumedError()
     elif chunk_size is not None and not isinstance(chunk_size, int):
-        raise TypeError("chunk_size must be an int, it is instead a %s." % type(chunk_size))
+        raise TypeError(
+            f"chunk_size must be an int, it is instead a {type(chunk_size)}.")
     # simulate reading small chunks of the content
     reused_chunks = iter_slices(self._content, chunk_size)
 
@@ -106,90 +145,113 @@ def iter_content(self, chunk_size=1, decode_unicode=False):
     return chunks
 
 
+# ----------------------
+# URL校验函数
+# ----------------------
+
+
 def check_url(u):
+    """验证URL是否符合GitHub资源格式"""
     for exp in (exp1, exp2, exp3, exp4, exp5):
-        m = exp.match(u)
-        if m:
+        if m := exp.match(u):
             return m
     return False
 
 
+# ----------------------
+# 主请求处理
+# ----------------------
+
+
 @app.route('/<path:u>', methods=['GET', 'POST'])
 def handler(u):
+    """代理请求处理入口"""
+    # 构造完整URL
     u = u if u.startswith('http') else 'https://' + u
-    if u.rfind('://', 3, 9) == -1:
-        u = u.replace('s:/', 's://', 1)  # uwsgi会将//传递为/
-    pass_by = False
-    m = check_url(u)
-    if m:
-        m = tuple(m.groups())
-        if white_list:
-            for i in white_list:
-                if m[:len(i)] == i or i[0] == '*' and len(m) == 2 and m[1] == i[1]:
-                    break
-            else:
-                return Response('Forbidden by white list.', status=403)
-        for i in black_list:
-            if m[:len(i)] == i or i[0] == '*' and len(m) == 2 and m[1] == i[1]:
-                return Response('Forbidden by black list.', status=403)
-        for i in pass_list:
-            if m[:len(i)] == i or i[0] == '*' and len(m) == 2 and m[1] == i[1]:
-                pass_by = True
-                break
-    else:
+    u = u.replace('s:/', 's://', 1) if u.rfind('://', 3, 9) == - \
+        1 else u  # 修复双斜杠问题 uwsgi会将//传递为/
+
+    # 检查URL合法性
+    if not (m := check_url(u)):
         return Response('Invalid input.', status=403)
 
-    if (jsdelivr or pass_by) and exp2.match(u):
-        u = u.replace('/blob/', '@', 1).replace('github.com', 'cdn.jsdelivr.net/gh', 1)
-        return redirect(u)
-    elif (jsdelivr or pass_by) and exp4.match(u):
-        u = re.sub(r'(\.com/.*?/.+?)/(.+?/)', r'\1@\2', u, 1)
-        _u = u.replace('raw.githubusercontent.com', 'cdn.jsdelivr.net/gh', 1)
-        u = u.replace('raw.github.com', 'cdn.jsdelivr.net/gh', 1) if _u == u else _u
-        return redirect(u)
-    else:
-        if exp2.match(u):
-            u = u.replace('/blob/', '/raw/', 1)
-        if pass_by:
-            url = u + request.url.replace(request.base_url, '', 1)
-            if url.startswith('https:/') and not url.startswith('https://'):
-                url = 'https://' + url[7:]
-            return redirect(url)
-        u = quote(u, safe='/:')
-        return proxy(u)
+    # 白名单检查
+    m_tuple = tuple(m.groups())
+    if white_list:
+        if not any((m_tuple[:len(i)] == i) or (i[0] == '*' and m_tuple[1] == i[1]) for i in white_list):
+            return Response('Forbidden by white list.', status=403)
+
+    # 黑名单检查
+    if any((m_tuple[:len(i)] == i) or (i[0] == '*' and m_tuple[1] == i[1]) for i in black_list):
+        return Response('Forbidden by black list.', status=403)
+
+    # 直接跳转检查
+    if any((m_tuple[:len(i)] == i) or (i[0] == '*' and m_tuple[1] == i[1]) for i in pass_list):
+        return redirect(BIG_SERVER + u, 301)
+
+    # 转换blob为raw地址
+    if exp2.match(u):
+        u = u.replace('/blob/', '/raw/', 1)
+
+    # URL编码处理
+    u = quote(u, safe='/:')
+    return proxy(u)  # 执行代理请求
 
 
-def proxy(u, allow_redirects=False):
-    headers = {}
-    r_headers = dict(request.headers)
-    if 'Host' in r_headers:
-        r_headers.pop('Host')
+# ----------------------
+# 代理转发函数
+# ----------------------
+
+
+def proxy(u, allow_redirects=False, last=""):
+    """执行实际请求转发"""
     try:
+        # 构造目标URL
         url = u + request.url.replace(request.base_url, '', 1)
         if url.startswith('https:/') and not url.startswith('https://'):
             url = 'https://' + url[7:]
-        r = requests.request(method=request.method, url=url, data=request.data, headers=r_headers, stream=True, allow_redirects=allow_redirects)
-        headers = dict(r.headers)
 
+        # 转发请求
+        r = requests.request(
+            method=request.method,
+            url=url,
+            data=request.data,
+            headers={k: v for k, v in request.headers if k.lower() != 'host'},
+            stream=True,
+            allow_redirects=allow_redirects
+        )
+
+        # 检查文件大小限制
         if 'Content-length' in r.headers and int(r.headers['Content-length']) > size_limit:
-            return redirect(u + request.url.replace(request.base_url, '', 1))
+            if not 'CF-IPCountry' in request.headers or request.headers['CF-IPCountry'] == 'CN':
+                url = last if last else url
+                return redirect(BIG_SERVER + url, 301)
+            return redirect(url, 301)
 
+        # 处理重定向
+        if 'Location' in r.headers:
+            loc = r.headers['Location']
+            return proxy(loc, True, url) if not check_url(loc) else redirect('/' + loc, 301)
+
+        # 删除指定的头部信息
+        for header in HEADERS_TO_REMOVE:
+            if header in r.headers:
+                r.headers.pop(header)
+
+        # 流式响应生成器
         def generate():
             for chunk in iter_content(r, chunk_size=CHUNK_SIZE):
                 yield chunk
 
-        if 'Location' in r.headers:
-            _location = r.headers.get('Location')
-            if check_url(_location):
-                headers['Location'] = '/' + _location
-            else:
-                return proxy(_location, True)
+        return Response(generate(), headers=dict(r.headers), status=r.status_code)
 
-        return Response(generate(), headers=headers, status=r.status_code)
     except Exception as e:
-        headers['content-type'] = 'text/html; charset=UTF-8'
-        return Response('server error ' + str(e), status=500, headers=headers)
+        return Response(f'server error {str(e)}', status=500, headers={'content-type': 'text/html; charset=UTF-8'})
 
+
+# ----------------------
+# 启动应用
+# ----------------------
 app.debug = True
 if __name__ == '__main__':
     app.run(host=HOST, port=PORT)

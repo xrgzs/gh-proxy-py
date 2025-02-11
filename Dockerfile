@@ -1,8 +1,8 @@
-FROM guysoft/uwsgi-nginx:python3.7
+FROM python:3.13-slim
 
-LABEL maintainer="hunshcn <hunsh.cn@gmail.com>"
+LABEL maintainer="MadDogOwner <xiaoran@xrgzs.top>"
 
-RUN pip install flask requests
+RUN pip install --no-cache-dir flask requests gunicorn
 
 COPY ./app /app
 WORKDIR /app
@@ -10,18 +10,8 @@ WORKDIR /app
 # Make /app/* available to be imported by Python globally to better support several use cases like Alembic migrations.
 ENV PYTHONPATH=/app
 
-# Move the base entrypoint to reuse it
-RUN mv /entrypoint.sh /uwsgi-nginx-entrypoint.sh
-# Copy the entrypoint that will generate Nginx additional configs
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+ENV LISTEN_ADDR=0.0.0.0:8000
 
-ENTRYPOINT ["/entrypoint.sh"]
+CMD ["sh", "-c", "gunicorn --bind ${LISTEN_ADDR} main:app"]
 
-# Run the start script provided by the parent image tiangolo/uwsgi-nginx.
-# It will check for an /app/prestart.sh script (e.g. for migrations)
-# And then will start Supervisor, which in turn will start Nginx and uWSGI
-
-EXPOSE 80
-
-CMD ["/start.sh"]
+EXPOSE 8000
