@@ -17,7 +17,6 @@ from urllib.parse import quote
 # 配置文件规则读取
 # ----------------------
 def read_and_process_rules(file_path):
-    """从指定文件路径读取规则并处理为元组格式"""
     try:
         with open(file_path, 'r', encoding='utf-8') as file:
             lines = [line.strip()
@@ -85,16 +84,16 @@ requests.sessions.default_headers = lambda: CaseInsensitiveDict()
 
 
 @app.route('/')
+# 首页处理，支持q参数重定向
 def index():
-    """首页处理，支持q参数重定向"""
     if 'q' in request.args:  # 如果带q参数则重定向
         return redirect('/' + request.args.get('q'), 301)
     # 默认返回404页面
     return Response('The requested resource was not found on this server.', status=404)
 
-
+# 禁止爬虫
 @app.route('/robots.txt')
-def icon():
+def robots():
     return Response("User-agent: *\r\nDisallow: /", status=200)
 
 
@@ -151,7 +150,6 @@ def iter_content(self, chunk_size=1, decode_unicode=False):
 
 
 def check_url(u):
-    """验证URL是否符合GitHub资源格式"""
     for exp in (exp1, exp2, exp3, exp4, exp5):
         if m := exp.match(u):
             return m
@@ -165,7 +163,6 @@ def check_url(u):
 
 @app.route('/<path:u>', methods=['GET', 'POST'])
 def handler(u):
-    """代理请求处理入口"""
     # 构造完整URL
     u = u if u.startswith('http') else 'https://' + u
     u = u.replace('s:/', 's://', 1) if u.rfind('://', 3, 9) == - \
@@ -204,7 +201,6 @@ def handler(u):
 
 
 def proxy(u, allow_redirects=False, last=""):
-    """执行实际请求转发"""
     try:
         # 构造目标URL
         url = u + request.url.replace(request.base_url, '', 1)
@@ -252,6 +248,6 @@ def proxy(u, allow_redirects=False, last=""):
 # ----------------------
 # 启动应用
 # ----------------------
-app.debug = True
+# app.debug = True
 if __name__ == '__main__':
     app.run(host=HOST, port=PORT)
