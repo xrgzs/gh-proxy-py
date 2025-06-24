@@ -43,8 +43,8 @@ pass_list = read_and_process_rules('passlist.txt')
 # 要删除的头部列表
 HEADERS_TO_REMOVE = ['Transfer-Encoding', 'Strict-Transport-Security', 'Access-Control-Allow-Origin',
                      'Clear-Site-Data',  'Content-Security-Policy', 'Content-Security-Policy-Report-Only',
-                     'Cross-Origin-Resource-Policy', 'X-GitHub-Request-Id', 'X-Fastly-Request-ID', 'Via',
-                     'X-Served-By', 'X-Cache', 'X-Cache-Hits', 'X-Timer', 'Expires', 'Source-Age']
+                     'Cross-Origin-Resource-Policy', 'x-ms-request-id', 'X-GitHub-Request-Id', 'X-Fastly-Request-ID',
+                     'Via', 'X-Served-By', 'X-Cache', 'X-Cache-Hits', 'X-Timer', 'Expires', 'Source-Age']
 
 # 监听参数（实际以 gunicorn、uwsgi 的为主）
 HOST = '127.0.0.1'  # 监听地址，建议监听本地然后由web服务器反代
@@ -92,6 +92,8 @@ def index():
     return Response('The requested resource was not found on this server.', status=404)
 
 # 禁止爬虫
+
+
 @app.route('/robots.txt')
 def robots():
     return Response("User-agent: *\r\nDisallow: /", status=200)
