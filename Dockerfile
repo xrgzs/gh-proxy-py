@@ -10,12 +10,6 @@ ENV PYTHONDONTWRITEBYTECODE=1
 # Turns off buffering for easier container logging
 ENV PYTHONUNBUFFERED=1
 
-# Install pip requirements
-RUN pip install --no-cache-dir flask requests gunicorn
-
-COPY ./app /app
-WORKDIR /app
-
 # Make /app/* available to be imported by Python globally to better support several use cases like Alembic migrations.
 ENV PYTHONPATH=/app
 
@@ -23,6 +17,17 @@ ENV PYTHONPATH=/app
 RUN adduser -u 5678 --disabled-password --gecos "" appuser && chown -R appuser /app
 USER appuser
 
+# Install pip requirements
+COPY --chown=appuser ./requirements.txt requirements.txt
+RUN pip install --no-cache-dir --upgrade -r requirements.txt
+
+# Copy the content of the app folder to /app inside the container
+COPY --chown=appuser ./app /app
+WORKDIR /app
+
+# Start the server
 ENV LISTEN_ADDR=0.0.0.0:8000
 
-CMD ["sh", "-c", "gunicorn --bind ${LISTEN_ADDR} main:app"]
+ENV WEB_CONCURRENCY=4
+
+CMD ["sh", "-c", "gunicorn --bind ${LISTEN_ADDR} --worker-class gevent --timeout 300 main:app"]
