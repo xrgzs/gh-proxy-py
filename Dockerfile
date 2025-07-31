@@ -16,6 +16,7 @@ ENV PYTHONPATH=/app
 # Creates a non-root user with an explicit UID
 RUN adduser -u 5678 --disabled-password --gecos "" appuser
 USER appuser
+ENV PATH="/home/appuser/.local/bin:$PATH"
 
 # Install pip requirements
 COPY --chown=appuser ./requirements.txt requirements.txt
